@@ -60,6 +60,10 @@ class TableMapping(BaseModel):
         default=None,
         description="entity_field_name → column_name for INSERT",
     )
+    filter_columns: dict[str, str] | None = Field(
+        default=None,
+        description="entity_field_name (kwarg) → column_name for WHERE filtering",
+    )
 
     @field_validator("insert_table")
     @classmethod
@@ -70,11 +74,16 @@ class TableMapping(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _validate_insert_columns(self) -> TableMapping:
+    def _validate_columns(self) -> TableMapping:
         if self.insert_columns:
             for col in self.insert_columns.values():
                 if not _SQL_IDENTIFIER_RE.match(col):
                     msg = f"insert_columns contains unsafe column name: {col!r}"
+                    raise ValueError(msg)
+        if self.filter_columns:
+            for col in self.filter_columns.values():
+                if not _SQL_IDENTIFIER_RE.match(col):
+                    msg = f"filter_columns contains unsafe column name: {col!r}"
                     raise ValueError(msg)
         return self
 

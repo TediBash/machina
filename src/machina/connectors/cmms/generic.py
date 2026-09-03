@@ -12,6 +12,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
+from enum import StrEnum
 
 if TYPE_CHECKING:
     from machina.connectors.cmms.generic_schema import GenericCmmsYamlConfig
@@ -286,29 +287,17 @@ class GenericCmmsConnector:
     # Read operations
     # ------------------------------------------------------------------
 
-    async def read_failure_modes(self) -> list[FailureMode]:
-        """Return all known failure modes.
-
-        In local mode the result reflects what ``failure_modes.json``
-        contained at :meth:`connect` time. The runtime's harvest treats
-        the not-connected error as "this provider contributes nothing"
-        rather than aborting.
-
-        Returns:
-            The failure-mode catalog loaded at connect time.
-
-        Raises:
-            ConnectorError: If called before :meth:`connect`.
-        """
+    async def read_failure_modes(self, **kwargs) -> list[FailureMode]:
+        """Return failure modes, optionally filtered."""
         self._ensure_connected()
-        return list(self._failure_modes)
+        return self._filter_local_cache(self._failure_modes, kwargs)
 
-    async def read_assets(self) -> list[Asset]:
-        """Return all known assets."""
+    async def read_assets(self, **kwargs) -> list[Asset]:
+        """Return all known assets, optionally filtered."""
         self._ensure_connected()
         if self._data_dir:
-            return list(self._assets.values())
-        return await self._rest_read_assets()
+            return self._filter_local_cache(list(self._assets.values()), kwargs)
+        return await self._rest_read_assets(**kwargs)
 
     async def get_asset(self, asset_id: str) -> Asset | None:
         """Look up a single asset by ID."""
@@ -318,22 +307,12 @@ class GenericCmmsConnector:
         assets = await self._rest_read_assets(asset_id=asset_id)
         return assets[0] if assets else None
 
-    async def read_work_orders(
-        self,
-        *,
-        asset_id: str = "",
-        status: str = "",
-    ) -> list[WorkOrder]:
-        """Read work orders, optionally filtered by asset or status."""
+    async def read_work_orders(self, **kwargs) -> list[WorkOrder]:
+        """Read work orders, optionally filtered by arbitrary kwargs."""
         self._ensure_connected()
         if self._data_dir:
-            results = self._work_orders
-            if asset_id:
-                results = [wo for wo in results if wo.asset_id == asset_id]
-            if status:
-                results = [wo for wo in results if wo.status.value == status]
-            return results
-        return await self._rest_read_work_orders(asset_id=asset_id, status=status)
+            return self._filter_local_cache(self._work_orders, kwargs)
+        return await self._rest_read_work_orders(**kwargs)
 
     @sandbox_aware
     async def create_work_order(self, work_order: WorkOrder) -> WorkOrder:
@@ -380,20 +359,16 @@ class GenericCmmsConnector:
             return work_order
         return await self._rest_create_work_order(work_order)
 
-    async def read_spare_parts(
-        self,
-        *,
-        asset_id: str = "",
-        sku: str = "",
-    ) -> list[SparePart]:
+    async def read_spare_parts(self, **kwargs) -> list[SparePart]:
         """Read spare parts, optionally filtered."""
         self._ensure_connected()
+        
+        asset_id = kwargs.pop("asset_id", "")
         results = self._spare_parts
         if asset_id:
             results = [sp for sp in results if asset_id in sp.compatible_assets]
-        if sku:
-            results = [sp for sp in results if sp.sku == sku]
-        return results
+            
+        return self._filter_local_cache(results, kwargs)
 
     async def read_maintenance_history(
         self,
@@ -480,16 +455,12 @@ class GenericCmmsConnector:
         """Transition a work order to CANCELLED status."""
         return await self.update_work_order(work_order_id, status=WorkOrderStatus.CANCELLED)  # type: ignore[no-any-return]
 
-    async def read_maintenance_plans(self) -> list[MaintenancePlan]:
-        """Read preventive-maintenance plans.
-
-        In local mode returns plans loaded from ``maintenance_plans.json``.
-        In REST mode fetches from the configured endpoint with pagination.
-        """
+    async def read_maintenance_plans(self, **kwargs) -> list[MaintenancePlan]:
+        """Read preventive-maintenance plans, optionally filtered."""
         self._ensure_connected()
         if self._data_dir:
-            return list(self._maintenance_plans)
-        return await self._rest_read_maintenance_plans()
+            return self._filter_local_cache(self._maintenance_plans, kwargs)
+        return await self._rest_read_maintenance_plans(**kwargs)
 
     # ------------------------------------------------------------------
     # Internal: local work-order updates
@@ -758,52 +729,39 @@ class GenericCmmsConnector:
             url=self.url,
         )
 
-    async def _rest_read_assets(self, *, asset_id: str = "") -> list[Asset]:
-        """Fetch assets from the REST API.
-
-        When ``asset_id`` is provided, GETs ``/assets/{id}`` and expects a
-        single-object response (pagination bypassed). Otherwise GETs
-        ``/assets`` and iterates via the configured pagination strategy.
-        """
+    async def _rest_read_assets(self, **kwargs) -> list[Asset]:
         httpx = _require_httpx()
         headers = self._rest_headers()
+        
+        # Extract asset_id if it exists to preserve single-asset URL targeting
+        asset_id = kwargs.pop("asset_id", "")
+        
         if asset_id:
             url = self._rest_url("assets", asset_id)
             async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(url, headers=headers)
+                # Pass any remaining kwargs as query parameters
+                resp = await client.get(url, headers=headers, params=kwargs)
                 resp.raise_for_status()
             return [_parse_asset(self._apply_mapping("assets", resp.json()))]
 
         url = self._rest_url("assets")
         results: list[Asset] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
-            async for raw in self._pagination.iterate(client, url, headers):
+            # Inject params=kwargs here!
+            async for raw in self._pagination.iterate(client, url, headers, params=kwargs):
                 results.append(_parse_asset(self._apply_mapping("assets", raw)))
         return results
+        return results
 
-    async def _rest_read_work_orders(
-        self,
-        *,
-        asset_id: str = "",
-        status: str = "",
-    ) -> list[WorkOrder]:
-        """Fetch work orders from the REST API.
-
-        Query params ``asset_id`` and ``status`` are forwarded to the server
-        when set. Iteration uses the configured pagination strategy.
-        """
+    async def _rest_read_work_orders(self, **kwargs) -> list[WorkOrder]:
         httpx = _require_httpx()
         headers = self._rest_headers()
-        params: dict[str, str] = {}
-        if asset_id:
-            params["asset_id"] = asset_id
-        if status:
-            params["status"] = status
-
         url = self._rest_url("work_orders")
+        
         results: list[WorkOrder] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
-            async for raw in self._pagination.iterate(client, url, headers, params=params):
+            # Just pass kwargs directly to params
+            async for raw in self._pagination.iterate(client, url, headers, params=kwargs):
                 results.append(_parse_work_order(self._apply_mapping("work_orders", raw)))
         return results
 
@@ -894,15 +852,15 @@ class GenericCmmsConnector:
             status=status or WorkOrderStatus.CREATED,
         )
 
-    async def _rest_read_maintenance_plans(self) -> list[MaintenancePlan]:
-        """Fetch maintenance plans from the REST API."""
+    async def _rest_read_maintenance_plans(self, **kwargs) -> list[MaintenancePlan]:
         config = self._require_endpoint("read_maintenance_plans")
         httpx = _require_httpx()
         path = config["path"]
         headers = self._rest_headers()
         results: list[MaintenancePlan] = []
         async with httpx.AsyncClient(timeout=30.0) as client:
-            async for raw in self._pagination.iterate(client, self._rest_url(path), headers):
+            # Inject params=kwargs here
+            async for raw in self._pagination.iterate(client, self._rest_url(path), headers, params=kwargs):
                 results.append(
                     _parse_maintenance_plan(self._apply_mapping("maintenance_plans", raw))
                 )
@@ -939,6 +897,32 @@ class GenericCmmsConnector:
     def _ensure_connected(self) -> None:
         if not self._connected:
             raise ConnectorError("Not connected — call connect() first")
+        
+    def _filter_local_cache(self, items: list[Any], filters: dict[str, Any]) -> list[Any]:
+        """Dynamically filter a list of in-memory domain entities."""
+        if not filters:
+            return items
+
+        filtered = []
+        for item in items:
+            match = True
+            for key, expected_val in filters.items():
+                actual_val = getattr(item, key, None)
+
+                # Unwrap Enums for safe comparison
+                if isinstance(actual_val, StrEnum):
+                    actual_val = actual_val.value
+                if isinstance(expected_val, StrEnum):
+                    expected_val = expected_val.value
+
+                if actual_val != expected_val:
+                    match = False
+                    break
+
+            if match:
+                filtered.append(item)
+
+        return filtered
 
 
 # ---------------------------------------------------------------------------

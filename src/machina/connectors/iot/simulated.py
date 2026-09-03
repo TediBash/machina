@@ -59,6 +59,7 @@ class SimulatedSensorConnector:
             text = await asyncio.to_thread(json_file.read_text, encoding="utf-8")
             data = json.loads(text)
             asset_id = data.get("asset_id", json_file.stem)
+            print(asset_id)
             self._readings[asset_id] = data
 
         self._connected = True
@@ -82,39 +83,68 @@ class SimulatedSensorConnector:
             message=f"Loaded sensor data for {len(self._readings)} assets",
         )
 
-    async def get_latest_reading(self, asset_id: str) -> dict[str, Any]:
+    async def get_latest_reading(self, asset_id: str, **kwargs: Any) -> dict[str, Any]:
         """Return the most recent sensor reading for an asset."""
-        data = self._readings.get(asset_id)
-        if not data or not data.get("sensor_readings"):
-            return {"asset_id": asset_id, "error": "No sensor data available"}
-        latest = data["sensor_readings"][-1]
+        # Utilize the newly updated method to ensure filtering applies to the 'latest' reading too
+        related = await self.get_related_readings(asset_id=asset_id, **kwargs)
+        
+        if not related.get("readings"):
+            return {"asset_id": asset_id, "error": "No sensor data available matching criteria"}
+            
+        latest_filtered = related["readings"][-1]
+        
         return {
             "asset_id": asset_id,
-            "asset_name": data.get("asset_name", ""),
-            "timestamp": latest.get("timestamp", ""),
-            "sensors": latest.get("sensors", {}),
+            "asset_name": related.get("asset_name", ""),
+            "timestamp": latest_filtered.get("timestamp", ""),
+            "sensors": latest_filtered.get("sensors", {}),
         }
 
     async def get_related_readings(
         self,
         asset_id: str = "",
+        time_initial: str | None = None,
+        time_end: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Return recent sensor readings for an asset (used by workflows).
-
-        Returns the last 5 readings to show the trend.
-        """
-        # Accept asset_id from kwargs (workflow template resolution)
-        asset_id = asset_id or kwargs.get("asset_id", "")
+        """Return sensor readings for an asset, filtered by time and exact sensor values."""
+        asset_id = asset_id or kwargs.pop("asset_id", "")
         data = self._readings.get(asset_id)
         if not data or not data.get("sensor_readings"):
             return {"asset_id": asset_id, "readings": [], "note": "No sensor data"}
 
-        recent = data["sensor_readings"][-5:]
+        filtered_readings = []
+        for reading in data["sensor_readings"]:
+            timestamp = reading.get("timestamp", "")
+            
+            # 1. Apply Time Boundaries
+            if time_initial and timestamp < time_initial:
+                continue
+            if time_end and timestamp > time_end:
+                continue
+
+            # 2. Apply Dynamic Kwarg Filters to Sensors
+            sensors = reading.get("sensors", {})
+            match_all_filters = True
+            
+            for key, expected_value in kwargs.items():
+                if key in sensors and sensors[key] != expected_value:
+                    match_all_filters = False
+                    break
+                    
+            if not match_all_filters:
+                continue
+
+            filtered_readings.append(reading)
+
+        # 3. Fallback: Return last 5 if absolutely no filters were provided to maintain previous behavior
+        if not time_initial and not time_end and not kwargs:
+            filtered_readings = filtered_readings[-5:]
+
         return {
             "asset_id": asset_id,
             "asset_name": data.get("asset_name", ""),
-            "reading_count": len(recent),
-            "readings": recent,
-            "latest": recent[-1].get("sensors", {}),
+            "reading_count": len(filtered_readings),
+            "readings": filtered_readings,
+            "latest": filtered_readings[-1].get("sensors", {}) if filtered_readings else {},
         }

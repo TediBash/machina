@@ -193,7 +193,7 @@ def _coerce_cell(value: Any, mapping: ColumnMapping) -> Any:
     """Coerce a single cell value according to its column mapping."""
     if value is None or (isinstance(value, str) and value.strip() == ""):
         if mapping.required:
-            return None  # caller detects and flags the row
+            return None
         return mapping.default
     if mapping.coerce and mapping.coerce in COERCER_REGISTRY:
         result = COERCER_REGISTRY[mapping.coerce](value)
@@ -228,6 +228,8 @@ def _read_xlsx_rows(
         wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     except PermissionError as exc:
         raise ConnectorLockedError(f"File is locked by another process: {path.name}") from exc
+    except Exception as exc:
+        raise ConnectorError(f"Failed to load Excel file '{path.name}' (may be corrupted): {exc}") from exc
 
     try:
         if sheet_name not in wb.sheetnames:
@@ -253,15 +255,17 @@ def _read_xlsx_rows(
 
 def _read_csv_rows(path: Path, schema: SheetSchema) -> tuple[list[str], list[dict[str, Any]]]:
     """Read rows from a CSV file."""
-    with path.open(newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        headers = list(reader.fieldnames or [])
-        data = list(reader)
-    return headers, data
+    try:
+        with path.open(newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            headers = list(reader.fieldnames or [])
+            data = list(reader)
+        return headers, data
+    except csv.Error as exc:
+        raise ConnectorError(f"Failed to parse CSV file '{path.name}': {exc}") from exc
 
 
 def _validate_headers(headers: list[str], schema: SheetSchema, source: str) -> None:
-    """Check that all required columns from the schema exist in the headers."""
     required_columns = {m.column for m in schema.columns if m.required}
     missing = required_columns - set(headers)
     if missing:
@@ -276,9 +280,8 @@ def _rows_to_dicts(
     schema: SheetSchema,
     source: str,
 ) -> list[dict[str, Any]]:
-    """Convert raw spreadsheet rows to coerced field dicts, skipping broken rows."""
     results: list[dict[str, Any]] = []
-    for row_num, raw in enumerate(raw_rows, start=2):  # row 1 is header
+    for row_num, raw in enumerate(raw_rows, start=2):
         record: dict[str, Any] = {}
         broken = False
         for mapping in schema.columns:
@@ -332,7 +335,6 @@ def _rows_to_dicts(
 def _append_xlsx_row(
     path: Path, sheet_name: str, schema: SheetSchema, row_data: dict[str, Any]
 ) -> None:
-    """Append a single row to an .xlsx file."""
     openpyxl = _require_openpyxl()
     try:
         wb = openpyxl.load_workbook(str(path))
@@ -358,7 +360,6 @@ def _append_xlsx_row(
 
 
 def _append_csv_row(path: Path, schema: SheetSchema, row_data: dict[str, Any]) -> None:
-    """Append a single row to a CSV file."""
     file_exists = path.exists() and path.stat().st_size > 0
     columns = [m.column for m in schema.columns]
     with path.open("a", newline="", encoding="utf-8") as f:
@@ -370,6 +371,32 @@ def _append_csv_row(path: Path, schema: SheetSchema, row_data: dict[str, Any]) -
             csv_row[mapping.column] = row_data.get(mapping.field, "")
         writer.writerow(csv_row)
 
+
+def _filter_cache(cache: list[Any], filters: dict[str, Any]) -> list[Any]:
+    """Dynamically filter a list of Pydantic models based on kwargs."""
+    if not filters:
+        return list(cache)
+    
+    filtered_results = []
+    for item in cache:
+        match = True
+        for key, expected_val in filters.items():
+            actual_val = getattr(item, key, None)
+            
+            # Unwrap enums safely before comparison
+            if isinstance(actual_val, StrEnum):
+                actual_val = actual_val.value
+            if isinstance(expected_val, StrEnum):
+                expected_val = expected_val.value
+                
+            if actual_val != expected_val:
+                match = False
+                break
+                
+        if match:
+            filtered_results.append(item)
+            
+    return filtered_results
 
 # ------------------------------------------------------------------
 # Connector
@@ -431,8 +458,6 @@ class ExcelCsvConnector:
     def __init__(self, *, config: ExcelConnectorConfig) -> None:
         self._config = config
         caps = set(self._BASE_CAPABILITIES)
-        # Writes are serviceable only with a writable work_orders sheet: both
-        # create_work_order and durable update_work_order require a write_mode.
         if config.work_orders is not None and config.work_orders.write_mode is not None:
             caps |= {Capability.CREATE_WORK_ORDER, Capability.UPDATE_WORK_ORDER}
         if config.failure_modes is not None:
@@ -496,19 +521,19 @@ class ExcelCsvConnector:
     # Read operations
     # ------------------------------------------------------------------
 
-    async def read_assets(self) -> list[Asset]:
+    async def read_assets(self, **kwargs) -> list[Asset]:
         """Return assets from the asset registry spreadsheet."""
         if self._config.asset_registry is None:
             return []
-        return list(self._asset_cache)
+        return _filter_cache(self._asset_cache, kwargs)
 
-    async def read_work_orders(self) -> list[WorkOrder]:
+    async def read_work_orders(self, **kwargs) -> list[WorkOrder]:
         """Return work orders from the work-order spreadsheet."""
         if self._config.work_orders is None:
             return []
-        return list(self._wo_cache)
+        return _filter_cache(self._wo_cache, kwargs)
 
-    async def read_failure_modes(self) -> list[FailureMode]:
+    async def read_failure_modes(self, **kwargs) -> list[FailureMode]:
         """Return failure modes from the failure-modes spreadsheet.
 
         Returns an empty list when no ``failure_modes`` sheet is
@@ -524,7 +549,7 @@ class ExcelCsvConnector:
             return []
         if not self._connected:
             raise ConnectorError("Not connected — call connect() before reading")
-        return list(self._fm_cache)
+        return _filter_cache(self._fm_cache, kwargs)
 
     # ------------------------------------------------------------------
     # Write operations
@@ -565,17 +590,11 @@ class ExcelCsvConnector:
         for wo in self._wo_cache:
             if wo.id == work_order_id:
                 schema = self._config.work_orders
-                # Serialise the cache mutation together with the rewrite under
-                # the write lock: the rewrite reads the whole cache from a worker
-                # thread, so a concurrent update mutating the cache must not
-                # interleave with it.
                 async with self._write_lock:
                     for key, value in updates.items():
                         if hasattr(wo, key):
                             setattr(wo, key, value)
                     if schema and schema.write_mode:
-                        # Full rewrite from cache for both xlsx and csv so the
-                        # change is durable, not cache-only (lost on restart).
                         await asyncio.to_thread(self._rewrite_work_orders, schema)
                 if not (schema and schema.write_mode):
                     logger.warning(
@@ -621,7 +640,6 @@ class ExcelCsvConnector:
             wb.close()
             tmp.replace(path)
         except Exception:
-            # Don't leave a partial/orphaned temp file behind on failure.
             tmp.unlink(missing_ok=True)
             raise
 
@@ -642,7 +660,6 @@ class ExcelCsvConnector:
                     writer.writerow({m.column: row_data.get(m.field, "") for m in schema.columns})
             tmp.replace(path)
         except Exception:
-            # Don't leave a partial/orphaned temp file behind on failure.
             tmp.unlink(missing_ok=True)
             raise
 
@@ -670,8 +687,13 @@ class ExcelCsvConnector:
                 self._validate_and_load_work_orders()
             if self._config.failure_modes:
                 self._validate_and_load_failure_modes()
-        except Exception:
+        except Exception as exc:
             self._asset_cache, self._wo_cache, self._fm_cache = snapshot
+            logger.error(
+                "cache_refresh_failed",
+                connector="ExcelCsvConnector",
+                error=str(exc)
+            )
             raise
         logger.info(
             "cache_refreshed",
@@ -697,7 +719,12 @@ class ExcelCsvConnector:
         path = Path(schema.path)
         if not path.exists():
             raise ConnectorConfigError(f"{label} file not found: {path}")
-        headers, raw_rows = self._read_file(path, schema)
+            
+        try:
+            headers, raw_rows = self._read_file(path, schema)
+        except Exception as exc:
+            raise ConnectorError(f"Error reading {label} file at {path}: {exc}") from exc
+            
         _validate_headers(headers, schema, str(path))
         return _rows_to_dicts(raw_rows, schema, str(path))
 

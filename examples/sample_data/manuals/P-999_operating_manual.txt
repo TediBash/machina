@@ -1,0 +1,95 @@
+
+---
+asset_id: P-999
+equipment_class_code: PU
+doc_type: procedure
+section_title: Impeller Replacement
+---
+
+# P-999 Impeller and Wear Ring Replacement Procedure
+
+## 1.0 Purpose and Scope
+This document outlines the standard operating procedure for removing and replacing the primary impeller and casing wear rings on the P-999 High-Pressure Centrifugal Pump. This procedure should be executed when pump performance drops below 80% of the rated curve or when vibration analysis indicates severe internal imbalance.
+
+## 2.0 Required Tools and Parts
+**Tools:**
+* Heavy-duty bearing puller (Hydraulic)
+* 36mm impact socket and pneumatic torque wrench
+* Dial indicator with magnetic base
+* Torch or induction heater (for impeller hub expansion)
+
+**Replacement Parts:**
+* 1x Primary Impeller (Part # IMP-999-SS316)
+* 2x Casing Wear Rings (Part # WR-Bronze-999)
+* 1x Shaft Key (Part # K-004-Square)
+* 1x Tube of Anti-Seize Compound (Nickel-based)
+
+## 3.0 Safety Precautions
+* **WARNING:** The P-999 impeller weighs approximately 85 lbs (38 kg). Use a mechanical hoist or dual-person lift technique. Do not attempt to lift the impeller manually.
+* Ensure the primary drive motor breaker is locked out and tagged out (LOTO) before removing the casing bolts.
+
+## 4.0 Disassembly Procedure
+1. Remove the 12 casing flange bolts using the 36mm impact socket. 
+2. Carefully separate the pump casing using the jack screws. 
+3. Secure the pump shaft to prevent rotation.
+4. Remove the impeller locknut (Note: The locknut has a left-hand thread. Turn clockwise to loosen).
+5. Attach the hydraulic bearing puller to the impeller back shroud and apply pressure until the impeller slides off the shaft.
+6. Remove the square shaft key (Part # K-004-Square) and inspect the keyway for wallowing or stress fractures.
+
+## 5.0 Wear Ring and Impeller Installation
+1. Chill the new bronze wear rings (Part # WR-Bronze-999) using dry ice for 15 minutes, then press them into the casing fit.
+2. Clean the pump shaft and apply a light coat of nickel-based anti-seize compound.
+3. Insert the new shaft key.
+4. Using an induction heater, evenly heat the new impeller (Part # IMP-999-SS316) to 250°F (121°C). 
+5. Quickly slide the heated impeller onto the shaft until it seats firmly against the shaft shoulder.
+6. Thread the impeller locknut (counter-clockwise) and torque to 450 Nm.
+
+## 6.0 Post-Assembly Verification
+Before fully reassembling the casing, mount a dial indicator on the shaft and check the impeller runout. Total Indicator Reading (TIR) must not exceed 0.002 inches. If runout exceeds this limit, remove the impeller and inspect the shaft for straightness.
+---
+asset_id: P-999
+equipment_class_code: PU
+doc_type: manual
+section_title: General Operations
+---
+
+# P-999 High-Pressure Centrifugal Pump
+## 1.0 General Description
+The P-999 is a heavy-duty, multi-stage centrifugal pump designed for high-viscosity fluid transfer in extreme temperature environments. It utilizes a dual-volute casing to balance radial loads and extend bearing life.
+
+## 2.0 Pre-Startup Checklist
+Before engaging the main drive motor for the P-999, operators must verify the following:
+* The suction valve is fully 100% open.
+* The discharge valve is cracked open to 10% to prevent dead-heading.
+* The seal flush fluid is circulating at a minimum of 2.5 GPM.
+* Bearing housing oil levels are visible halfway up the sight glass.
+
+## 3.0 Normal Operation Constraints
+Do not operate the P-999 below the minimum continuous safe flow of 150 GPM. Sustained operation below this threshold will result in severe cavitation, impeller pitting, and premature mechanical seal failure.
+
+
+# P-999 Quarterly Preventive Maintenance Procedure
+
+## Section A: Seal Inspection
+1. Isolate the P-999 pump using the standard Lockout/Tagout (LOTO) procedure.
+2. Drain the fluid from the primary casing using the lower bleeder valve.
+3. Remove the mechanical seal gland plate using a 14mm socket wrench.
+4. Inspect the primary O-rings. If there is any sign of flattening or chemical degradation, replace them with Viton-grade O-rings (Part # VT-443-B).
+
+## Section B: Bearing Lubrication and Replacement
+The P-999 uses oil-bath lubrication. The oil must be drained and replaced every 3 months using ISO VG 68 synthetic oil. 
+If vibration analysis indicates a fault, the thrust bearings must be replaced. The accepted replacement part is the SKF-7720 angular contact ball bearing. Do not substitute with standard radial bearings as they will fail under the P-999's axial load.
+
+
+# P-999 Troubleshooting Matrix
+
+If the P-999 pump exhibits abnormal behavior, consult the following diagnostic table before escalating to a Tier 2 mechanical work order.
+
+| Symptom | Potential Root Cause | Recommended Action |
+| :--- | :--- | :--- |
+| Zero Discharge Pressure | Pump has lost prime or suction line is blocked. | Vent the casing completely. Check suction strainer for debris. |
+| Excessive Bearing Temp (>180°C) | Oil level too low, or oil is contaminated with water. | Drain bearing housing, flush, and refill with ISO VG 68 oil. |
+| High Frequency Vibration | Impeller imbalance or cavitation. | Check flow rate. If below 150 GPM, open discharge valve further. |
+| Visible Leak at Shaft | Mechanical seal failure or degraded O-ring. | Shut down immediately. Replace seal cartridge and Part # VT-443-B. |
+
+Note: For any electrical faults related to the P-999 main drive, refer to the site Electrical Safety guidelines.

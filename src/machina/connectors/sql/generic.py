@@ -197,45 +197,28 @@ class GenericSqlConnector:
     # Read operations
     # ------------------------------------------------------------------
 
-    async def read_assets(self) -> list[Asset]:
-        """Read assets from the configured table mapping.
-
-        When the mapping includes a ``failure_modes`` field, the source
-        column is interpreted as a semicolon-delimited failure-mode code
-        string and resolved into ``Asset.failure_modes`` (see
-        :func:`machina.connectors._entity_builders.split_list_cell`).
-        """
+    async def read_assets(self, **kwargs) -> list[Asset]:
+        """Read assets from the configured table mapping, dynamically filtering using kwargs."""
         mapping = self._find_mapping("Asset")
         if mapping is None:
             return []
-        rows = await self._execute_read(mapping)
+        rows = await self._execute_read(mapping, filters=kwargs)
         return [_dict_to_asset(r) for r in rows]
 
-    async def read_work_orders(self) -> list[WorkOrder]:
-        """Read work orders from the configured table mapping."""
+    async def read_work_orders(self, **kwargs) -> list[WorkOrder]:
+        """Read work orders from the configured table mapping, dynamically filtering using kwargs."""
         mapping = self._find_mapping("WorkOrder")
         if mapping is None:
             return []
-        rows = await self._execute_read(mapping)
+        rows = await self._execute_read(mapping, filters=kwargs)
         return [_dict_to_work_order(r) for r in rows]
 
-    async def read_failure_modes(self) -> list[FailureMode]:
-        """Read the failure-mode catalog from the configured table mapping.
-
-        Returns an empty list when no ``FailureMode`` table mapping is
-        configured (in which case ``Capability.READ_FAILURE_MODES`` is
-        not declared either).
-
-        Raises:
-            ConnectorError: If not connected or the read fails.
-            ConnectorSchemaError: If a mapped row produces an invalid
-                ``FailureMode`` (e.g. NULL/empty code) — a loud schema
-                signal rather than a silently truncated catalog.
-        """
+    async def read_failure_modes(self, **kwargs) -> list[FailureMode]:
+        """Read the failure-mode catalog from the configured table mapping, dynamically filtering using kwargs."""
         mapping = self._find_mapping("FailureMode")
         if mapping is None:
             return []
-        rows = await self._execute_read(mapping)
+        rows = await self._execute_read(mapping, filters=kwargs)
         modes: list[FailureMode] = []
         for row in rows:
             try:
@@ -335,13 +318,13 @@ class GenericSqlConnector:
                 return mapping
         return None
 
-    async def _execute_read(self, mapping: TableMapping) -> list[dict[str, Any]]:
+    async def _execute_read(self, mapping: TableMapping, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """Execute a read query with retry on transient errors."""
         retry_cfg = self._config.retry
 
         for attempt in range(retry_cfg.max_retries + 1):
             try:
-                return await asyncio.to_thread(self._read_sync, mapping)
+                return await asyncio.to_thread(self._read_sync, mapping, filters)
             except Exception as exc:
                 if _is_transient(exc) and attempt < retry_cfg.max_retries:
                     backoff = (
@@ -367,11 +350,8 @@ class GenericSqlConnector:
                     ) from exc
                 if isinstance(exc, ConnectorError):
                     raise
-                # Honor the connector contract: callers (e.g. the runtime's
-                # failure-mode harvest) key their degraded-operation handling
-                # on ConnectorError — a raw driver exception must not escape.
                 raise ConnectorError(f"SQL read failed: {exc}") from exc
-        return []  # unreachable, satisfies mypy
+        return []
 
     async def _execute_write(self, mapping: TableMapping, data: dict[str, Any]) -> None:
         """Execute a write operation with retry on transient errors."""
@@ -406,12 +386,42 @@ class GenericSqlConnector:
                     ) from exc
                 raise
 
-    def _read_sync(self, mapping: TableMapping) -> list[dict[str, Any]]:
+    def _read_sync(self, mapping: TableMapping, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if self._conn is None:
             raise ConnectorError("Not connected — call connect() before reading")
+        
         cursor = self._conn.cursor()
         try:
-            cursor.execute(mapping.query)
+            sql = mapping.query
+            params: list[Any] = []
+            
+            if filters and mapping.filter_columns:
+                where_clauses = []
+                for kwarg, val in filters.items():
+                    if kwarg in mapping.filter_columns:
+                        db_col = mapping.filter_columns[kwarg]
+                        where_clauses.append(f"{db_col} = ?")
+                        if isinstance(val, StrEnum):
+                            val = val.value
+                        params.append(val)
+                
+                if where_clauses:
+                    where_string = " AND ".join(where_clauses)
+                    sql = f"SELECT * FROM ({mapping.query}) AS _machina_filter WHERE {where_string}"
+
+            try:
+                cursor.execute(sql, params)
+            except Exception as exc:
+                # Fallback: some legacy DBs don't support subquery aliasing
+                if params and mapping.filter_columns:
+                    fallback_sql = f"{mapping.query} AND {where_string}" if "WHERE" in mapping.query.upper() else f"{mapping.query} WHERE {where_string}"
+                    try:
+                        cursor.execute(fallback_sql, params)
+                    except Exception as fallback_exc:
+                        raise ConnectorError(f"Query execution failed. Subquery error: {exc}. Fallback error: {fallback_exc}") from fallback_exc
+                else:
+                    raise
+
             columns = [desc[0] for desc in (cursor.description or [])]
             results: list[dict[str, Any]] = []
             for row in cursor.fetchall():
